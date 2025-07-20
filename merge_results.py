@@ -1,5 +1,5 @@
 # File: launch_comparison.py
-# Purpose: The main script to start the entire process with user prompts and automated monitoring.
+# Purpose: The main script to start the entire process with robust error handling.
 import os
 import argparse
 import subprocess
@@ -38,8 +38,7 @@ def shard_file(input_file, key_cols, num_shards, output_dir):
                 shard_index = hash(key) % num_shards
                 output_files[shard_index].write(line)
     except FileNotFoundError:
-        print(f"  ERROR: Input file not found: {input_file}")
-        # Clean up created empty files
+        print(f"  ❌ ERROR: Input file not found: {input_file}")
         for file_handle in output_files:
             file_handle.close()
         return False
@@ -51,50 +50,40 @@ def shard_file(input_file, key_cols, num_shards, output_dir):
 
 def monitor_jobs(job_ids):
     """Monitors LSF jobs until they are all done."""
-    if not job_ids:
-        return
+    if not job_ids: return
     print("\n--- Part 4: Monitoring LSF Jobs ---")
     while True:
         try:
-            # Use bjobs to query the status of all jobs at once
-            result = subprocess.run(f"bjobs {' '.join(job_ids)}", shell=True, check=True, capture_output=True, text=True)
-            running_jobs = result.stdout.strip().split('\n')
-            # The header line from bjobs is always present if there's at least one job
-            num_active = len(running_jobs) - 1 if len(running_jobs) > 0 else 0
-            num_finished = len(job_ids) - num_active
+            result = subprocess.run(f"bjobs -o 'jobid stat' {' '.join(job_ids)}", shell=True, check=True, capture_output=True, text=True)
+            output = result.stdout.strip().split('\n')
             
-            print(f"\r-> Monitoring... {num_finished}/{len(job_ids)} jobs complete. (Checking again in 30s)", end="")
-
-            if num_finished == len(job_ids):
+            # Count how many jobs are in DONE or EXIT status
+            finished_count = sum(1 for line in output if 'DONE' in line or 'EXIT' in line)
+            total_jobs = len(job_ids)
+            
+            print(f"\r-> Monitoring... {finished_count}/{total_jobs} jobs complete. (Checking again in 30s)", end="")
+            
+            if finished_count == total_jobs:
                 print("\n✅ All jobs have finished.")
                 break
-
         except subprocess.CalledProcessError:
-            # This error occurs when bjobs finds no jobs with the given IDs, meaning they are all done.
+            # This error can happen if bjobs finds no running jobs, meaning they are all done.
             print("\n✅ All jobs have finished.")
             break
-        
-        time.sleep(30) # Wait for 30 seconds before checking again
-
+        time.sleep(30)
 
 def get_job_report(job_id):
     """Gets the runtime and memory usage for a completed job from bhist."""
     try:
-        # bhist is more reliable for jobs that have already finished
         result = subprocess.run(f"bhist -l {job_id}", shell=True, check=True, capture_output=True, text=True)
         output = result.stdout
-
         runtime_match = re.search(r"Total CPU time used is\s+([\d.]+)\s+seconds", output)
         runtime = float(runtime_match.group(1)) if runtime_match else "N/A"
-
         mem_match = re.search(r"MAX MEM:\s+([\d.]+\s+[KMG]B);", output)
         memory = mem_match.group(1).strip() if mem_match else "N/A"
-
         return runtime, memory
     except (subprocess.CalledProcessError, AttributeError):
-        # Fallback to the log file if bhist fails (e.g., job info expired)
         return "N/A (check logs)", "N/A (check logs)"
-
 
 def main():
     """Guides the user, shards files, submits LSF jobs, monitors, and merges."""
@@ -109,12 +98,10 @@ def main():
         file1 = input("Enter path to the first file: ")
         instcol1_str = input(f"Enter instance key column(s) for {os.path.basename(file1)} (e.g., 2 or 0,1): ")
         valcol1 = input(f"Enter value column for {os.path.basename(file1)} (e.g., 1): ")
-        
         file2 = input("Enter path to the second file: ")
         instcol2_str = input(f"Enter instance key column(s) for {os.path.basename(file2)} (e.g., 1 or 0,1): ")
         valcol2 = input(f"Enter value column for {os.path.basename(file2)} (e.g., 1): ")
-
-        shards = int(input("How many parallel jobs do you want to run? (e.g., 5, 10, 20): "))
+        shards = int(input("How many parallel jobs do you want to run? (e.g., 10, 20): "))
         python_command = input("Enter the full path to the Python command for LSF (press Enter for default): ")
         if not python_command:
             python_command = "/grid/common/pkgsData/python-v3.9.6t1/Linux/RHEL8.0-2019-x86_64/bin/python3.9"
@@ -125,32 +112,52 @@ def main():
 
     # --- Part 2: Perform the sharding ---
     print("\n--- Part 2: Sharding Files ---")
-    output_dir = "shards"
+    # Use absolute paths for everything to avoid issues on LSF nodes
+    script_dir = os.path.abspath(os.getcwd())
+    shards_dir = os.path.join(script_dir, "shards")
+
     instcol1 = list(map(int, instcol1_str.split(',')))
     instcol2 = list(map(int, instcol2_str.split(',')))
     
-    if not shard_file(file1, instcol1, shards, output_dir): return
-    if not shard_file(file2, instcol2, shards, output_dir): return
+    if not shard_file(file1, instcol1, shards, shards_dir): return
+    if not shard_file(file2, instcol2, shards, shards_dir): return
     print("✅ Sharding complete.")
 
     # --- Part 3: Automatically submit jobs to LSF ---
     print("\n--- Part 3: Submitting Jobs to LSF ---")
-    os.makedirs("results", exist_ok=True)
-    os.makedirs("logs", exist_ok=True)
+    
+    # Verify the comparison script exists before we try to submit jobs
+    compare_script_path = os.path.join(script_dir, "compare_adv.py")
+    if not os.path.exists(compare_script_path):
+        print(f"\n❌ FATAL ERROR: The comparison script 'compare_adv.py' was not found.")
+        print(f"  Please ensure 'compare_adv.py' is in the same directory as this script.")
+        print(f"  Expected location: {compare_script_path}")
+        return
+
+    results_dir = os.path.join(script_dir, "results")
+    logs_dir = os.path.join(script_dir, "logs")
+    os.makedirs(results_dir, exist_ok=True)
+    os.makedirs(logs_dir, exist_ok=True)
 
     file1_basename = os.path.basename(file1)
     file2_basename = os.path.basename(file2)
     job_ids = []
 
     for i in range(shards):
+        # Construct all paths as absolute to ensure LSF can find them
+        log_path = os.path.join(logs_dir, f"output_{i}.log")
+        file1_shard_path = os.path.join(shards_dir, f"{file1_basename}_shard_{i}.txt")
+        file2_shard_path = os.path.join(shards_dir, f"{file2_basename}_shard_{i}.txt")
+        output_prefix_path = os.path.join(results_dir, f"run_{i}")
+
         bsub_command = (
-            f"bsub -n 2 -R 'rusage[mem=16G]' -o 'logs/output_{i}.log' "
-            f"{python_command} compare_adv.py "
-            f"--file1 'shards/{file1_basename}_shard_{i}.txt' "
-            f"--file2 'shards/{file2_basename}_shard_{i}.txt' "
+            f"bsub -n 2 -R 'rusage[mem=16G]' -o '{log_path}' "
+            f"{python_command} {compare_script_path} "
+            f"--file1 '{file1_shard_path}' "
+            f"--file2 '{file2_shard_path}' "
             f"--instcol1 '{instcol1_str}' --valcol1 {valcol1} "
             f"--instcol2 '{instcol2_str}' --valcol2 {valcol2} "
-            f"--output_prefix 'results/run_{i}'"
+            f"--output_prefix '{output_prefix_path}'"
         )
         
         try:
@@ -164,9 +171,22 @@ def main():
             else:
                 print(f"  ERROR: Could not parse Job ID from bsub output. Full output:\n{result.stdout}")
         except subprocess.CalledProcessError as e:
-            print(f"  ERROR: Failed to submit job for shard {i}. LSF command failed.")
-            print(f"  Command was: {bsub_command}")
-            print(f"  Stderr: {e.stderr}")
+            # This is the enhanced error reporting block
+            print("\n" + "="*80)
+            print(f"❌ ERROR: The 'bsub' command failed for shard {i}. LSF rejected the job.")
+            print("This is often due to an issue with your LSF environment or the command parameters.")
+            print("Please review the details below. You may need to consult your LSF administrator.")
+            print("="*80)
+            print(f"\n[INFO] Failed Command:\n{bsub_command}\n")
+            print(f"[INFO] Exit Code: {e.returncode}")
+            print(f"\n[INFO] LSF Output (stdout):\n{e.stdout}")
+            print(f"\n[INFO] LSF Error (stderr):\n{e.stderr}")
+            print("\n" + "="*80)
+            print("Common reasons for failure:")
+            print("  1. The Python path is incorrect for the LSF nodes.")
+            print("  2. The resource request (-R 'rusage[mem=16G]') is invalid for your queues.")
+            print("  3. You do not have permission to submit to the default LSF queue.")
+            print("  4. A file path in the command is incorrect or not accessible from LSF nodes.")
             break
 
     if len(job_ids) != shards:
@@ -188,7 +208,7 @@ def main():
 
     # --- Part 6: Merge Results Automatically ---
     print("\n--- Part 6: Merging Results ---")
-    prefix = "results/run"
+    prefix = os.path.join(results_dir, "run")
     final_csv = "final_comparison.csv"
     final_txt = "final_missing_instances.txt"
 
