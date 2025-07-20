@@ -6,7 +6,7 @@ import argparse
 def merge_csv_files(num_shards, prefix, final_filename):
     """Merges partial CSV files, handling the header correctly."""
     print(f"-> Merging {num_shards} comparison CSV files into '{final_filename}'...")
-    
+
     first_file = f"{prefix}_0_comparison.csv"
     if not os.path.exists(first_file):
         print(f"  ERROR: Cannot find the first result file: {first_file}")
@@ -16,7 +16,7 @@ def merge_csv_files(num_shards, prefix, final_filename):
     with open(final_filename, "w") as final_out:
         with open(first_file, "r") as f_in:
             final_out.write(f_in.read())
-        
+
         for i in range(1, num_shards):
             partial_file = f"{prefix}_{i}_comparison.csv"
             if os.path.exists(partial_file):
@@ -28,7 +28,7 @@ def merge_csv_files(num_shards, prefix, final_filename):
 def merge_txt_files(num_shards, prefix, final_filename):
     """Concatenates all partial missing instance text files."""
     print(f"-> Merging {num_shards} missing instance TXT files into '{final_filename}'...")
-    
+
     with open(final_filename, "w") as final_out:
         for i in range(num_shards):
             partial_file = f"{prefix}_{i}_missing_instances.txt"
@@ -42,14 +42,14 @@ def main():
     parser = argparse.ArgumentParser(description="Merge partial results from parallel LSF runs.")
     parser.add_argument("--shards", type=int, help="The number of shards/jobs that were run.")
     args = parser.parse_args()
-    
+
     if not args.shards:
         try:
             args.shards = int(input("How many parallel jobs were run? (e.g., 5, 10, 20): "))
         except ValueError:
             print("Invalid input. Please enter a number.")
             return
-            
+
     prefix = "results/run"
     final_csv = "final_comparison.csv"
     final_txt = "final_missing_instances.txt"
@@ -64,4 +64,4 @@ def main():
         print(f"  -> {final_txt}")
 
 if __name__ == "__main__":
-    m
+    main()
