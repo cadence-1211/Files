@@ -5,8 +5,16 @@ import sys
 import mmap
 import csv
 import multiprocessing
-import re
-from tqdm import tqdm
+
+# --- Dependency Check ---
+# Check for required libraries at the very beginning and exit gracefully if not found.
+try:
+    from tqdm import tqdm
+except ImportError:
+    print("❌ Error: 'tqdm' library not found. Please install it to see progress bars.")
+    print("➡️ Run: pip install tqdm")
+    sys.exit(1)
+
 
 # --- PERFORMANCE-CRITICAL CONSTANTS ---
 # Using a set of bytes is faster for checking prefixes than a list or tuple.
@@ -17,8 +25,6 @@ METADATA_KEYWORDS = {
     b"WINDOW", b"RP_VALUE", b"RP_FORMAT", b"RP_INST_LIMIT", b"RP_THRESHOLD",
     b"RP_PIN_NAME", b"MICRON_UNITS", b"INST_NAME"
 }
-# Pre-calculating the set length is a micro-optimization for the loop.
-METADATA_KEYWORDS_LEN = len(METADATA_KEYWORDS)
 
 
 def find_chunk_boundaries(file_path, num_chunks):
@@ -129,13 +135,11 @@ def parallel_parse_file(file_path, inst_cols, value_col):
             # Use starmap to pass arguments directly, slightly more efficient than map
             future = pool.starmap_async(process_chunk, worker_args)
             
-            processed_count = 0
             # Monitor the queue for progress updates
             while not future.ready():
                 while not progress_queue.empty():
                     lines_done = progress_queue.get()
                     pbar.update(lines_done)
-                    processed_count += lines_done
                 time.sleep(0.1) # Prevent this loop from consuming a full core
             
             # Final update for any remaining lines
@@ -278,11 +282,7 @@ def main():
     print(f"\nTotal execution time: {t1 - t0:.4f} seconds")
 
 if __name__ == "__main__":
+    # This guard is essential for multiprocessing to work correctly on all platforms.
+    # It prevents child processes from re-executing the main script's code.
     multiprocessing.freeze_support()
-    # Add the tqdm library as a dependency
-    try:
-        import tqdm
-    except ImportError:
-        print("Error: 'tqdm' library not found. Please install it using: pip install tqdm")
-        sys.exit(1)
     main()
