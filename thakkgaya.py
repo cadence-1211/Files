@@ -9,7 +9,7 @@ import multiprocessing
 # --- Dependency Check ---
 # Check for required libraries at the very beginning and exit gracefully if not found.
 try:
-    from tqdm import tqdm
+    import tqdm
 except ImportError:
     print("❌ Error: 'tqdm' library not found. Please install it to see progress bars.")
     print("➡️ Run: pip install tqdm")
@@ -130,7 +130,7 @@ def parallel_parse_file(file_path, inst_cols, value_col):
     final_data = {}
     final_instances_set = set()
 
-    with tqdm(total=total_lines, desc=f"Processing {file_name}", unit="lines", unit_scale=True) as pbar:
+    with tqdm.tqdm(total=total_lines, desc=f"Processing {file_name}", unit="lines", unit_scale=True) as pbar:
         with multiprocessing.Pool(processes=num_workers) as pool:
             # Use starmap to pass arguments directly, slightly more efficient than map
             future = pool.starmap_async(process_chunk, worker_args)
@@ -183,7 +183,7 @@ def write_comparison_csv(file1_name, file2_name, data1, data2, matched, col_name
         ]
         writer.writerow(headers)
         
-        for inst_key in tqdm(matched, desc="Writing CSV", unit="rows"):
+        for inst_key in tqdm.tqdm(matched, desc="Writing CSV", unit="rows"):
             raw_bytes1, val1 = data1[inst_key]
             raw_bytes2, val2 = data2[inst_key]
             
