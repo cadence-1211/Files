@@ -6,19 +6,8 @@ import mmap
 import csv
 import multiprocessing
 
-# --- Dependency Check ---
-# Check for required libraries at the very beginning and exit gracefully if not found.
-try:
-    import tqdm
-except ImportError:
-    print("❌ Error: 'tqdm' library not found. Please install it to see progress bars.")
-    print("➡️ Run: pip install tqdm")
-    sys.exit(1)
-
-
 # --- PERFORMANCE-CRITICAL CONSTANTS ---
 # Using a set of bytes is faster for checking prefixes than a list or tuple.
-# These keywords identify lines that are metadata, not instance data.
 METADATA_KEYWORDS = {
     b"VERSION", b"CREATION", b"CREATOR", b"PROGRAM", b"DIVIDERCHAR", b"DESIGN",
     b"UNITS", b"INSTANCE_COUNT", b"NOMINAL_VOLTAGE", b"POWER_NET", b"GROUND_NET",
@@ -55,7 +44,7 @@ def find_chunk_boundaries(file_path, num_chunks):
     
     return [(boundaries[i], boundaries[i+1]) for i in range(len(boundaries)-1) if boundaries[i] < boundaries[i+1]]
 
-def process_chunk(file_path, start_byte, end_byte, inst_cols, value_col, progress_queue):
+def process_chunk(file_path, start_byte, end_byte, inst_cols, value_col):
     """
     Worker function: This is the core task executed by each process in the pool.
     It parses a specific byte chunk of a file, extracting instance data.
@@ -63,7 +52,6 @@ def process_chunk(file_path, start_byte, end_byte, inst_cols, value_col, progres
     max_col = max(inst_cols + [value_col])
     data = {}
     instances_set = set()
-    lines_processed = 0
 
     with open(file_path, "rb") as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
@@ -74,7 +62,6 @@ def process_chunk(file_path, start_byte, end_byte, inst_cols, value_col, progres
                 if not line:
                     break
                 
-                lines_processed += 1
                 stripped_line = line.strip()
                 if not stripped_line or stripped_line.startswith(b'#') or stripped_line.split(b' ', 1)[0] in METADATA_KEYWORDS:
                     continue
@@ -96,10 +83,6 @@ def process_chunk(file_path, start_byte, end_byte, inst_cols, value_col, progres
                     instances_set.add(key)
                 except IndexError:
                     continue
-    
-    # Report progress back to the main process
-    if progress_queue:
-        progress_queue.put(lines_processed)
         
     return data, instances_set
 
@@ -117,36 +100,14 @@ def parallel_parse_file(file_path, inst_cols, value_col):
         print(f"Warning: File {file_name} is empty or could not be read.")
         return {}, set()
 
-    # Use a Manager queue for progress reporting from workers.
-    # This is better than a shared counter as it avoids lock contention.
-    manager = multiprocessing.Manager()
-    progress_queue = manager.Queue()
-
-    # Prepare arguments for each worker process
-    worker_args = [(file_path, start, end, inst_cols, value_col, progress_queue) for start, end in chunk_boundaries]
+    worker_args = [(file_path, start, end, inst_cols, value_col) for start, end in chunk_boundaries]
     
-    total_lines = sum(1 for line in open(file_path, 'rb'))
-
     final_data = {}
     final_instances_set = set()
 
-    with tqdm.tqdm(total=total_lines, desc=f"Processing {file_name}", unit="lines", unit_scale=True) as pbar:
-        with multiprocessing.Pool(processes=num_workers) as pool:
-            # Use starmap to pass arguments directly, slightly more efficient than map
-            future = pool.starmap_async(process_chunk, worker_args)
-            
-            # Monitor the queue for progress updates
-            while not future.ready():
-                while not progress_queue.empty():
-                    lines_done = progress_queue.get()
-                    pbar.update(lines_done)
-                time.sleep(0.1) # Prevent this loop from consuming a full core
-            
-            # Final update for any remaining lines
-            while not progress_queue.empty():
-                pbar.update(progress_queue.get())
-
-            results = future.get()
+    with multiprocessing.Pool(processes=num_workers) as pool:
+        # starmap distributes the arguments in worker_args to the process_chunk function
+        results = pool.starmap(process_chunk, worker_args)
 
     # Aggregate the results from all worker processes
     for data_chunk, instances_chunk in results:
@@ -175,6 +136,7 @@ def write_missing_file(file1_name, file2_name, miss2, miss1):
 
 def write_comparison_csv(file1_name, file2_name, data1, data2, matched, col_name1, col_name2):
     """Writes the detailed comparison of matched instances to a CSV file."""
+    print("Writing comparison.csv...")
     with open("comparison.csv", "w", newline="", encoding='utf-8') as csvfile:
         writer = csv.writer(csvfile)
         key_len = len(matched[0]) if matched else 1
@@ -183,7 +145,7 @@ def write_comparison_csv(file1_name, file2_name, data1, data2, matched, col_name
         ]
         writer.writerow(headers)
         
-        for inst_key in tqdm.tqdm(matched, desc="Writing CSV", unit="rows"):
+        for inst_key in matched:
             raw_bytes1, val1 = data1[inst_key]
             raw_bytes2, val2 = data2[inst_key]
             
@@ -282,7 +244,5 @@ def main():
     print(f"\nTotal execution time: {t1 - t0:.4f} seconds")
 
 if __name__ == "__main__":
-    # This guard is essential for multiprocessing to work correctly on all platforms.
-    # It prevents child processes from re-executing the main script's code.
     multiprocessing.freeze_support()
     main()
